@@ -1,44 +1,71 @@
 import gc
+import os
 import time
 from typing import List
 from app.core.config import settings
 from app.core.logger import logger
 
-_EMBEDDING_DEVICE: str = "cpu"
-_EMBEDDING_IS_GPU: bool = False
+_EMBEDDING_DEVICE: str | None = None
+_CACHED_MODEL = None
+_CACHED_MODEL_NAME: str = ""
 
-# 模块级模型缓存（每个 worker 进程只加载一次，避免每次请求 8s+ 的加载开销）
-_cached_model = None
-_cached_model_name: str = ""
+
+def _detect_device() -> str:
+    global _EMBEDDING_DEVICE
+    if _EMBEDDING_DEVICE is not None:
+        return _EMBEDDING_DEVICE
+    try:
+        import torch
+        if torch.cuda.is_available():
+            vram_mb = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+            logger.info(f"Embedding: CUDA 可用, 显存={vram_mb}MB")
+            _EMBEDDING_DEVICE = "cuda"
+            return _EMBEDDING_DEVICE
+    except Exception:
+        pass
+    _EMBEDDING_DEVICE = "cpu"
+    return _EMBEDDING_DEVICE
+
+
+def _detect_batch_size() -> int:
+    device = _detect_device()
+    if device == "cuda":
+        try:
+            import torch
+            vram_mb = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+            if vram_mb < 4000:
+                return 8
+            elif vram_mb < 8000:
+                return 16
+            else:
+                return 32
+        except Exception:
+            return 8
+    return 4
 
 
 def _get_local_model():
-    """单例：全局缓存 SentenceTransformer 模型，优先从本地缓存加载"""
-    global _cached_model, _cached_model_name
-    if _cached_model is None or _cached_model_name != settings.EMBEDDING_MODEL:
-        import os
-
+    global _CACHED_MODEL, _CACHED_MODEL_NAME
+    if _CACHED_MODEL is None or _CACHED_MODEL_NAME != settings.EMBEDDING_MODEL:
         _patch_torch_version_check()
 
         from sentence_transformers import SentenceTransformer
         from huggingface_hub import try_to_load_from_cache
 
         model_name = settings.EMBEDDING_MODEL
-        logger.info(f"Embedding 模型首次加载: {model_name}（耗时较长，后续请求直接复用）")
+        device = _detect_device()
+        logger.info(f"Embedding 模型首次加载: {model_name} device={device}")
 
-        # 用 huggingface_hub 精确定位本地缓存目录（含完整 tokenizer + model 文件）
         config_path = try_to_load_from_cache(model_name, "config.json")
         if config_path and os.path.isfile(config_path):
             local_path = os.path.dirname(config_path)
-            logger.info(f"Embedding 本地缓存路径: {local_path}")
-            _cached_model = SentenceTransformer(local_path, device="cpu", local_files_only=True)
+            _CACHED_MODEL = SentenceTransformer(local_path, device=device, local_files_only=True)
         else:
-            logger.warning("Embedding 未找到本地缓存，尝试从远端下载...")
-            _cached_model = SentenceTransformer(model_name, device="cpu")
+            _CACHED_MODEL = SentenceTransformer(model_name, device=device)
 
-        _cached_model_name = model_name
-        logger.info(f"Embedding 模型加载完成，已缓存")
-    return _cached_model
+        _CACHED_MODEL_NAME = model_name
+        logger.info(f"Embedding 模型加载完成, device={device}")
+    return _CACHED_MODEL
 
 
 def _patch_torch_version_check():
@@ -76,19 +103,16 @@ class EmbeddingService:
 
     @classmethod
     def _local_embed(cls, texts: List[str]) -> List[List[float]]:
-        """使用缓存的模型编码文本块。CPU 每批 4 条避免内存爆炸。"""
         t_load = time.perf_counter()
         model = _get_local_model()
         load_ms = (time.perf_counter() - t_load) * 1000
-        # 首次加载超过 100ms 说明是真实加载，否则是复用缓存
-        is_first_load = load_ms > 100
-        if is_first_load:
+        if load_ms > 100:
             logger.info(f"Embedding 模型加载(冷启动): {load_ms:.1f}ms | model={settings.EMBEDDING_MODEL}")
         else:
             logger.debug(f"Embedding 模型获取(复用): {load_ms:.1f}ms | model={settings.EMBEDDING_MODEL}")
 
         results = []
-        BATCH = 4
+        BATCH = _detect_batch_size()
         t_encode_total = time.perf_counter()
         for i in range(0, len(texts), BATCH):
             batch = texts[i:i + BATCH]
@@ -107,7 +131,7 @@ class EmbeddingService:
             gc.collect()
 
         encode_total_ms = (time.perf_counter() - t_encode_total) * 1000
-        logger.debug(f"Embedding 总encode耗时: {encode_total_ms:.1f}ms | 总文本数={len(texts)}")
+        logger.debug(f"Embedding 总encode耗时: {encode_total_ms:.1f}ms | 总文本数={len(texts)} | batch={BATCH}")
         return results
 
     @classmethod
