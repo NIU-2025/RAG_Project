@@ -1,0 +1,271 @@
+================================================================
+  RAG 检索增强生成系统 - 本地运行环境准备指南
+  操作系统：Windows 10/11（其他系统命令略有差异 请通过AI自动替换为你需要的版本）
+================================================================
+
+
+----------------------------------------------------------------
+一、基础软件安装（如已有基础环境跳至第二步）
+----------------------------------------------------------------
+
+【1】Python 3.11+(推荐 3.13.12 不要高于 3.13版本 否则后续步骤可能出错)
+    下载地址：https://www.python.org/downloads/
+    安装时勾选 "Add Python to PATH"
+    验证：
+        python --version
+        pip --version
+
+【2】Node.js 18+（前端必须）
+    下载地址：https://nodejs.org/（选 LTS 版本）
+    验证：
+        node --version
+        npm --version
+
+【3】MySQL 8.0+
+    下载地址：https://dev.mysql.com/downloads/mysql/
+    推荐安装方式：MySQL Installer（含 MySQL Server + Workbench）
+    安装时记住 root 密码，后续配置要用。
+    验证：
+        mysql -u root -p
+        输入密码后看到 mysql> 提示即成功
+
+【4】Git（可选，用于拉取代码）
+    下载地址：https://git-scm.com/downloads/win
+
+【5】Microsoft Visual C++ 编译工具（chromadb依赖下载时需要）
+    下载地址：https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/
+    安装时，确保勾选以下组件：
+    MSVC v143 - VS 2022 C++ x64/x86 build tools
+    Windows 10/11 SDK
+    安装完成后，重启电脑
+
+【6】 安装语音文件转码工具 （可选，需要上传语音文件的话就安装）
+  ffmpeg基础版 
+  https://wwt.lanzouo.com/i8Boq1rnfbcf?password=49si 密码 49si 
+  解压之后将路径配置环境变量
+  示例： E:\ffmpeg\ffmpeg-6.1.1-essentials_build\bin
+ 验证： ffmpeg -version
+
+----------------------------------------------------------------
+二、Python 虚拟环境创建
+----------------------------------------------------------------
+
+    # 进入项目目录
+    cd D:\workspace\rag-system
+
+    # 创建虚拟环境（推荐，避免全局污染）
+    python -m venv venv
+
+    # 激活虚拟环境
+    venv\Scripts\activate       （Windows CMD）
+    source venv/bin/activate    （Git Bash / Linux / Mac）
+
+    # 激活后命令提示符前面会显示 (venv)
+
+
+----------------------------------------------------------------
+三、安装 Python 依赖（基于venv虚拟环境）
+----------------------------------------------------------------
+
+    #1. 升级 pip
+    pip install --upgrade pip
+    # 如果报错则强制安装
+    python -m pip install --upgrade --ignore-installed pip
+
+    # 2.安装所有依赖（需要几分钟，包含大型库如 sentence-transformers）
+    pip install -r requirements.txt
+
+  ⚠️ 注：如果 pip install -r requirements.txt 命令执行很慢
+      切换国内镜像：
+       pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+
+    ⚠️ 注意：camelot-py[cv] 依赖 opencv，若安装失败可跳过：
+        pip install -r requirements.txt --ignore-requires-python
+    或单独移除 requirements.txt 中的 camelot-py 那行后再安装。
+
+
+----------------------------------------------------------------
+四、MySQL 数据库初始化
+----------------------------------------------------------------
+CREATE DATABASE IF NOT EXISTS `rag_system` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ 执行完成后会：
+        - 创建 rag_system 数据库
+----------------------------------------------------------------
+五、配置环境变量（.env 文件）
+----------------------------------------------------------------
+
+    项目目录下已有 .env 文件，根据实际情况修改：
+
+    # 用记事本或 VS Code 打开
+     找到\rag-system\.env 文件
+
+    必须修改的配置项：
+
+    ┌─────────────────────────────────────────────────────┐
+    │  MYSQL_PASSWORD=你的MySQL root密码                   │
+    │  MYSQL_USER=root                                    │
+    │  MYSQL_DATABASE=rag_system                          │
+    └─────────────────────────────────────────────────────┘
+
+    按需修改（填写你要用的大模型 API Key   也可页面配置）：
+
+    ┌─────────────────────────────────────────────────────┐
+    │  DEFAULT_LLM_PROVIDER=deepssek  （选一个）             │
+    │                                                     │
+    │  # 使用 OpenAI                                      │
+    │  OPENAI_API_KEY=sk-xxxx                             │
+    │                                                     │
+    │  # 使用 DeepSeek（推荐，便宜）                        │
+    │  DEEPSEEK_API_KEY=sk-xxxx                           │
+    │                                                     │
+    │  # 使用通义千问                                       │
+    │  DASHSCOPE_API_KEY=sk-xxxx                          │
+    │                                                     │
+    │  # 使用本地 Ollama（免费，见下方第六步）                │
+    │  DEFAULT_LLM_PROVIDER=ollama                        │
+    └─────────────────────────────────────────────────────┘
+
+    Embedding 模型（默认本地，首次运行自动下载）：
+    ┌─────────────────────────────────────────────────────┐
+    │
+    │  EMBEDDING_PROVIDER=local                           │
+    │  EMBEDDING_MODEL=BAAI/bge-m3                        │
+    │  （模型约 1.1GB，首次运行自动下载到本地）          │
+    │  在 .env 里配置环境变量：
+    │   HF_HOME= xxxx(下载到本地路径)
+    │
+    └─────────────────────────────────────────────────────┘
+
+
+----------------------------------------------------------------
+六、【可选】安装 Ollama（使用本地大模型，无需 API Key）
+----------------------------------------------------------------
+
+    下载地址：https://ollama.com/download
+
+    安装后拉取模型：
+         ollama pull deepseek-r1:7b   （DeepSeek 7B，约 4.7GB）
+    启动 Ollama 服务：
+        ollama serve
+        （默认运行在 http://localhost:11434）
+
+    在 .env 中设置：
+        DEFAULT_LLM_PROVIDER=ollama
+        OLLAMA_MODEL= deepseek-r1:7b
+
+
+----------------------------------------------------------------
+七、安装前端依赖
+----------------------------------------------------------------
+
+    cd D:\workspace\rag-system\frontend
+
+    npm install
+
+    若网络慢，可切换淘宝镜像：
+        npm config set registry https://registry.npmmirror.com
+        npm install
+
+
+----------------------------------------------------------------
+八、启动项目
+----------------------------------------------------------------
+
+    【启动后端】
+        # 确保在项目根目录，且虚拟环境已激活
+        cd D:\workspace\rag-system
+        venv\Scripts\activate
+        python main.py
+
+        ✅ 看到以下输出表示成功：
+            RAG 系统启动...
+            数据库初始化完成
+            INFO:     Uvicorn running on http://0.0.0.0:8000
+
+        API 文档：http://localhost:8000/docs
+
+    【启动前端】（新开一个终端）
+        cd D:\workspace\rag-system\frontend
+        npm install
+        npm run dev
+
+        ✅ 看到以下输出表示成功：
+            VITE v6.x.x  ready in xxx ms
+            ➜  Local:   http://localhost:5173/
+
+        访问：http://localhost:5173
+        超级管理员 
+		账号 admin
+ 		密码 admin123
+
+        注册账号
+
+      
+----------------------------------------------------------------
+九、常见问题排查
+----------------------------------------------------------------D
+
+Q2：MySQL 连接失败 (Can't connect to MySQL server)
+    A：检查 MySQL 服务是否启动
+       Windows：Win+R → services.msc → 找到 MySQL80 → 启动
+
+Q3：首次启动后端很慢（卡在启动阶段）
+    A：正在下载 BAAI/bge-m3 Embedding 模型（约 1.1GB），等待即可
+       下载完成后后续启动不需要重新下载
+
+Q4：端口 8000 被占用
+    A：修改启动命令：uvicorn main:app --reload --port 8001
+       同时修改 frontend/vite.config.js 中 proxy target 为 8001
+
+Q5：camelot-py 安装失败
+    A：删除 requirements.txt 中 camelot-py[cv] 那行，该库仅用于
+       PDF 表格高精度提取，不影响其他功能
+
+Q6：sentence-transformers 模型下载失败（网络问题）
+    A：设置镜像后重试：
+       在 .env 中改为云端 Embedding：
+           EMBEDDING_PROVIDER=openai
+           OPENAI_API_KEY=sk-xxxx
+
+Q7：前端页面空白/接口 404
+    A：确认后端已正常启动，vite.config.js proxy 配置正确
+
+Q8：启动报错
+    D:\workspace\rag-system>python main.py
+       Traceback (most recent call last):
+  File "D:\cworkspace\rag-system\main.py", line 19, in <module>
+    from app.api.routes import auth, kb, docs, chat, search
+  File "D:\workspace\rag-system\app\api\routes\chat.py", line 11, in <module>
+    from app.services.retrieval import RetrievalService
+  File "D:\workspace\rag-system\app\services\retrieval.py", line 10, in <module>
+    import jieba
+   ModuleNotFoundError: No module named 'jieba'
+
+# 彻底卸载
+python -m pip uninstall jieba -y
+
+# 清理缓存
+python -m pip cache purge
+
+# 重新安装（不使用缓存）
+python -m pip install --no-cache-dir jieba
+
+# 验证安装是否完整
+python -c "import jieba; print(jieba.__version__)"
+
+
+
+----------------------------------------------------------------
+十、环境版本汇总
+----------------------------------------------------------------
+
+    软件              最低版本    推荐版本
+    ──────────────────────────────────────
+    Python            3.11        3.11 / 3.12
+    Node.js           18.0        20.x LTS
+    MySQL             8.0         8.0 / 8.4
+    Ollama（可选）     0.1         最新版
+    操作系统           Win10       Win11
+
+================================================================

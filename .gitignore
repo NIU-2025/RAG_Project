@@ -1,0 +1,46 @@
+# Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# IDE 配置
+.vscode/
+.idea/
+
+# 环境变量（含敏感密钥，严禁提交）
+.env
+
+# 本地数据
+chroma_db/
+uploads/
+logs/
+*.log
+
+# 前端依赖（不提交，通过 package.json 安装）
+node_modules/
+frontend/node_modules/
+frontend/package-lock.json
+.dbg/
+debug-*.md
+collect_out.txt
+test_output.txt
+package-lock.json
+
+# 工具生成文件
+.codearchdoc.yml
+.zread/
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
