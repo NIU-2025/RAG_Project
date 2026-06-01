@@ -121,12 +121,13 @@ class RetrievalService:
         # 6. 计算加权混合分数，按此排序取 Top-K
         t_fusion = time.perf_counter()
 
-        if len(vec_scores) == 0 and len(bm25_scores) > 0:
-            vec_w, bm25_w = 0.0, 1.0
-        elif len(bm25_scores) == 0 and len(vec_scores) > 0:
-            vec_w, bm25_w = 1.0, 0.0
-        else:
-            vec_w, bm25_w = settings.VECTOR_WEIGHT, settings.BM25_WEIGHT
+        vec_w, bm25_w = _compute_dynamic_weights(
+            vec_scores=vec_scores,
+            bm25_scores=bm25_scores,
+            query=query,
+            base_vec_w=settings.VECTOR_WEIGHT,
+            base_bm25_w=settings.BM25_WEIGHT,
+        )
 
         combined_scores: Dict[str, float] = {}
         for chroma_id in all_ids:
@@ -350,3 +351,84 @@ def _build_where(kb_id: int, file_type: Optional[str], tags: Optional[str]) -> O
     if len(conditions) == 1:
         return conditions[0]
     return {"$and": conditions}
+
+
+def _compute_dynamic_weights(
+    vec_scores: Dict[str, float],
+    bm25_scores: Dict[str, float],
+    query: str,
+    base_vec_w: float,
+    base_bm25_w: float,
+) -> tuple:
+    """
+    动态计算向量与 BM25 的融合权重 — 独立叠加修正，避免互斥盲区。
+
+    策略（独立施加修正，不互斥）：
+    1. 单侧无结果 → 另一方权重升至 1.0（兜底）
+    2. 查询含精确引用词 → BM25 加分
+    3. 查询含具体数量词 → BM25 加分
+    4. 查询为疑问/语义型 → 向量加分
+    5. 双方结果重叠度极低 → 均衡权重
+    """
+    import re
+
+    # ── 兜底：单侧无结果 ──
+    if len(vec_scores) == 0 and len(bm25_scores) > 0:
+        return 0.0, 1.0
+    if len(bm25_scores) == 0 and len(vec_scores) > 0:
+        return 1.0, 0.0
+    if len(vec_scores) == 0 and len(bm25_scores) == 0:
+        return base_vec_w, base_bm25_w
+
+    vec_w, bm25_w = base_vec_w, base_bm25_w
+    adjustments = []
+
+    # ── 策略 2：精确引用词 → BM25 加分 ──
+    exact_ref_patterns = [
+        r"第[一二三四五六七八九十\d]+[条条款节段落]",
+        r"\d+\s*[条条款节]",
+        r"第\s*\d+\s*[页行款]",
+    ]
+    has_exact_ref = any(re.search(p, query) for p in exact_ref_patterns)
+    if has_exact_ref:
+        vec_w -= 0.20
+        bm25_w += 0.20
+        adjustments.append("精确引用词→BM25+0.2")
+
+    # ── 策略 3：具体数量查询 → BM25 加分 ──
+    quantity_patterns = [
+        r"\d+\s*次", r"\d+\s*元", r"\d+\s*分钟",
+        r"\d+\s*小时", r"\d+\s*天", r"\d+\s*%",
+    ]
+    has_quantity = any(re.search(p, query) for p in quantity_patterns)
+    if has_quantity:
+        vec_w -= 0.10
+        bm25_w += 0.10
+        adjustments.append("数量查询→BM25+0.1")
+
+    # ── 策略 4：疑问/语义型 → 向量加分 ──
+    semantic_indicators = ("怎么", "如何", "为什么", "什么", "多少", "吗", "呢", "？", "?")
+    is_semantic = any(w in query for w in semantic_indicators)
+    if is_semantic and not has_exact_ref and not has_quantity:
+        vec_w += 0.15
+        bm25_w -= 0.15
+        adjustments.append("语义疑问→向量+0.15")
+
+    # ── 策略 5：重叠度极低 → 均衡 ──
+    vec_ids = set(vec_scores.keys())
+    bm_ids = set(bm25_scores.keys())
+    overlap = len(vec_ids & bm_ids)
+    total_unique = len(vec_ids | bm_ids)
+    if overlap <= 1 and total_unique >= 3:
+        vec_w = (vec_w + 0.5) / 2
+        bm25_w = (bm25_w + 0.5) / 2
+        adjustments.append("低重叠→均衡")
+
+    # ── 钳制到安全区间 ──
+    vec_w = max(0.15, min(0.85, vec_w))
+    bm25_w = max(0.15, min(0.85, bm25_w))
+
+    if adjustments:
+        logger.debug(f"动态权重: {', '.join(adjustments)} | 最终 vec={vec_w:.2f} bm25={bm25_w:.2f}")
+
+    return vec_w, bm25_w
