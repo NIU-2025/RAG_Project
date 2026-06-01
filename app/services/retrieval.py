@@ -121,7 +121,6 @@ class RetrievalService:
         # 6. 计算加权混合分数，按此排序取 Top-K
         t_fusion = time.perf_counter()
 
-        # 动态权重：某一方无结果时，另一方权重升至 1.0
         if len(vec_scores) == 0 and len(bm25_scores) > 0:
             vec_w, bm25_w = 0.0, 1.0
         elif len(bm25_scores) == 0 and len(vec_scores) > 0:
@@ -174,42 +173,62 @@ class RetrievalService:
             if settings.RERANK_ENABLED and coarse_ids:
                 logger.debug(f"检索-Reranker跳过: 候选数={len(coarse_ids)}（<=1 条无需重排）")
 
-        # 9. 构建返回结果
-        # Reranker 精排路径：使用相对排序而非绝对阈值截断
-        # 只要 top-1 得分 > 0.01（并非完全不相关），就取 top_k 返回
+        # 9. 构建返回结果（Reranker 三层降级策略）
         use_reranked = settings.RERANK_ENABLED and len(coarse_ids) > 1
-        results = []
-        for chroma_id in final_sorted[:top_k]:
-            score = final_scores.get(chroma_id, combined_scores.get(chroma_id, 0.0))
+        results: List[SearchResult] = []
 
-            if use_reranked:
-                top_score = final_scores.get(final_sorted[0], 0) if final_sorted else 0
-                if top_score < 0.01:
-                    logger.debug(f"检索-Reranker判定全部不相关: top_score={top_score:.4f}")
-                    break
+        if use_reranked:
+            top_score = final_scores.get(final_sorted[0], 0) if final_sorted else 0
+
+            if top_score < 0.1:
+                logger.info(f"检索-Reranker降级: top_score={top_score:.4f}<0.1, 回退粗排")
+                results = _build_results(coarse_ids[:top_k], combined_scores, score_threshold, vec_docs, fallback_map)
+            elif top_score < 0.3:
+                logger.info(f"检索-Reranker混合: top_score={top_score:.4f}∈[0.1,0.3), 混合结果")
+                reranked = _build_results(final_sorted[:top_k], final_scores, 0.0, vec_docs, fallback_map)
+                coarse = _build_results(coarse_ids[:top_k], combined_scores, score_threshold, vec_docs, fallback_map)
+                seen = {r.doc_id for r in reranked}
+                for r in coarse:
+                    if r.doc_id not in seen:
+                        reranked.append(r)
+                        seen.add(r.doc_id)
+                results = reranked[:top_k]
             else:
-                if score < score_threshold:
-                    logger.debug(f"检索-分数过滤: chroma_id={chroma_id} score={score:.4f} < threshold={score_threshold}")
-                    continue
-
-            info = vec_docs.get(chroma_id) or fallback_map.get(chroma_id)
-            if not info:
-                continue
-
-            meta = info["metadata"]
-            results.append(SearchResult(
-                doc_id=meta.get("doc_id", 0),
-                filename=meta.get("filename", ""),
-                file_type=meta.get("file_type", ""),
-                chunk_index=meta.get("chunk_index", 0),
-                page_num=meta.get("page_num") or None,
-                content=info["text"],
-                score=round(score, 4),
-                tags=meta.get("tags") or None,
-            ))
+                results = _build_results(final_sorted[:top_k], final_scores, 0.0, vec_docs, fallback_map)
+        else:
+            results = _build_results(coarse_ids[:top_k], combined_scores, score_threshold, vec_docs, fallback_map)
 
         logger.debug(f"检索完成: kb={kb_id}, query={query[:30]}, 命中={len(results)}")
         return results
+
+
+def _build_results(
+    ids: List[str],
+    scores: Dict[str, float],
+    threshold: float,
+    vec_docs: Dict[str, dict],
+    fallback_map: Dict[str, dict],
+) -> List[SearchResult]:
+    results = []
+    for chroma_id in ids:
+        score = scores.get(chroma_id, 0.0)
+        if score < threshold:
+            continue
+        info = vec_docs.get(chroma_id) or fallback_map.get(chroma_id)
+        if not info:
+            continue
+        meta = info["metadata"]
+        results.append(SearchResult(
+            doc_id=meta.get("doc_id", 0),
+            filename=meta.get("filename", ""),
+            file_type=meta.get("file_type", ""),
+            chunk_index=meta.get("chunk_index", 0),
+            page_num=meta.get("page_num") or None,
+            content=info["text"],
+            score=round(score, 4),
+            tags=meta.get("tags") or None,
+        ))
+    return results
 
 
 async def _bm25_search(
