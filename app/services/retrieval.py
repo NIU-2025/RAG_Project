@@ -80,7 +80,9 @@ class RetrievalService:
 
         # 2. ChromaDB 向量检索
         t1 = time.perf_counter()
-        where_filter = _build_where(kb_id, file_type, tags)
+        where_filter = _build_where(kb_id, file_type, tags) #构建查询条件
+
+        #向量检索
         vector_results = VectorStore.query(
             kb_id=kb_id,
             query_embedding=query_embedding,
@@ -103,7 +105,9 @@ class RetrievalService:
                 vector_results["documents"][0],
                 vector_results["metadatas"][0],
             ):
-                similarity = 1.0 - distance
+                # ChromaDB返回的是余弦距离 所以距离越小，相似度越高
+                #但是后续的BM25和Reranker分数都是越大越相关，为了让向量分数和其他分数在同一个语义方向上参与加权融合，必须做 1.0 - distance 的转换
+                similarity = 1.0 - distance 
                 vec_scores[chroma_id] = similarity
                 vec_docs[chroma_id] = {"text": doc_text, "metadata": metadata}
         parse_ms = (time.perf_counter() - t_parse) * 1000
@@ -143,6 +147,22 @@ class RetrievalService:
         rerank_multiplier = settings.RERANK_MULTIPLIER if settings.RERANK_ENABLED else 1
         coarse_top_n = min(top_k * rerank_multiplier, len(sorted_ids))
         coarse_ids = sorted_ids[:coarse_top_n]
+
+        vec_ids = set(vec_scores.keys())
+        bm25_ids = set(bm25_scores.keys())
+        _coarse_sources = []
+        for _cid in coarse_ids:
+            _in_vec = _cid in vec_ids
+            _in_bm = _cid in bm25_ids
+            if _in_vec and _in_bm:
+                _coarse_sources.append("向量+BM25")
+            elif _in_vec:
+                _coarse_sources.append("向量")
+            elif _in_bm:
+                _coarse_sources.append("BM25")
+            else:
+                _coarse_sources.append("DB回填")
+        logger.debug(f"检索-粗排候选来源: {list(zip(coarse_ids, _coarse_sources))}")
 
         missing_ids = [cid for cid in coarse_ids if cid not in vec_docs]
         fallback_map = await _batch_lookup_chunks(missing_ids, db) if missing_ids and db else {}
@@ -200,6 +220,30 @@ class RetrievalService:
             results = _build_results(coarse_ids[:top_k], combined_scores, score_threshold, vec_docs, fallback_map)
 
         logger.debug(f"检索完成: kb={kb_id}, query={query[:30]}, 命中={len(results)}")
+        if results:
+            _doc_vec_ids = set()
+            _doc_bm25_ids = set()
+            for _info in vec_docs.values():
+                _doc_vec_ids.add(_info["metadata"].get("doc_id", 0))
+            for _cid in bm25_scores:
+                _info = vec_docs.get(_cid) or fallback_map.get(_cid)
+                if _info:
+                    _doc_bm25_ids.add(_info["metadata"].get("doc_id", 0))
+            _final_sources = []
+            for _r in results:
+                _did = _r.doc_id if hasattr(_r, "doc_id") else 0
+                _in_vec = _did in _doc_vec_ids
+                _in_bm = _did in _doc_bm25_ids
+                if _in_vec and _in_bm:
+                    _tag = "向量+BM25"
+                elif _in_vec:
+                    _tag = "向量"
+                elif _in_bm:
+                    _tag = "BM25"
+                else:
+                    _tag = "DB回填"
+                _final_sources.append(f"id={_did}({_tag}, score={_r.score})")
+            logger.debug(f"检索-最终结果来源: {_final_sources}")
         return results
 
 
@@ -271,10 +315,13 @@ async def _get_bm25_corpus(kb_id: int, db: AsyncSession):
     cache_key = f"kb:{kb_id}:bm25"
 
     cached = await cache_get_json(cache_key)
+
+    #ids是列表，里面存了所有chunk的id，corpus是列表，里面存了所有chunk的分词语料
     if cached and "ids" in cached and "corpus" in cached:
         logger.debug(f"BM25 缓存命中: kb_id={kb_id}, chunks={len(cached['ids'])}")
         return cached["corpus"], cached["ids"]
 
+    #缓存未命中，从数据库查询
     t_db = time.perf_counter()
     result = await db.execute(
         select(DocumentChunk.chroma_id, DocumentChunk.content)
@@ -374,10 +421,13 @@ def _compute_dynamic_weights(
 
     # ── 兜底：单侧无结果 ──
     if len(vec_scores) == 0 and len(bm25_scores) > 0:
+        logger.info("向量无结果，BM25有结果，权重升至 1.0")
         return 0.0, 1.0
     if len(bm25_scores) == 0 and len(vec_scores) > 0:
+        logger.info("BM25无结果，向量有结果，权重升至 1.0")
         return 1.0, 0.0
     if len(vec_scores) == 0 and len(bm25_scores) == 0:
+        logger.info("向量无结果，BM25无结果，权重保持默认值")
         return base_vec_w, base_bm25_w
 
     vec_w, bm25_w = base_vec_w, base_bm25_w
@@ -391,6 +441,7 @@ def _compute_dynamic_weights(
     ]
     has_exact_ref = any(re.search(p, query) for p in exact_ref_patterns)
     if has_exact_ref:
+        logger.info("查询含精确引用词，BM25加分 0.2, 向量减分 0.2")
         vec_w -= 0.20
         bm25_w += 0.20
         adjustments.append("精确引用词→BM25+0.2")
@@ -402,6 +453,7 @@ def _compute_dynamic_weights(
     ]
     has_quantity = any(re.search(p, query) for p in quantity_patterns)
     if has_quantity:
+        logger.info("查询含具体数量词，BM25加分 0.1, 向量减分 0.1")
         vec_w -= 0.10
         bm25_w += 0.10
         adjustments.append("数量查询→BM25+0.1")
@@ -410,6 +462,7 @@ def _compute_dynamic_weights(
     semantic_indicators = ("怎么", "如何", "为什么", "什么", "多少", "吗", "呢", "？", "?")
     is_semantic = any(w in query for w in semantic_indicators)
     if is_semantic and not has_exact_ref and not has_quantity:
+        logger.info("查询为疑问/语义型，向量加分 0.15, BM25减分 0.15")
         vec_w += 0.15
         bm25_w -= 0.15
         adjustments.append("语义疑问→向量+0.15")
@@ -420,6 +473,7 @@ def _compute_dynamic_weights(
     overlap = len(vec_ids & bm_ids)
     total_unique = len(vec_ids | bm_ids)
     if overlap <= 1 and total_unique >= 3:
+        logger.info("双方结果重叠度极低，均衡权重")
         vec_w = (vec_w + 0.5) / 2
         bm25_w = (bm25_w + 0.5) / 2
         adjustments.append("低重叠→均衡")

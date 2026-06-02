@@ -1,4 +1,3 @@
-import math
 import time
 from typing import List, Tuple
 from app.core.config import settings
@@ -68,7 +67,13 @@ class RerankerService:
 
         if isinstance(logits, float):
             logits = [logits]
-        scores = [1.0 / (1.0 + math.exp(-s)) for s in logits]
+        _min_l = min(logits)
+        _max_l = max(logits)
+        _range = _max_l - _min_l
+        if _range > 1e-8:
+            scores = [(s - _min_l) / _range for s in logits]
+        else:
+            scores = [1.0 for _ in logits]
         logger.debug(f"Reranker 精排: {elapsed:.1f}ms | candidates={len(candidates)} | "
                      f"scores={[round(s, 4) for s in scores]}")
         return scores

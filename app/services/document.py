@@ -64,7 +64,7 @@ def _sync_process_doc(doc_id: int):
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.CHUNK_SIZE,
             chunk_overlap=settings.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""],
+            separators=["\n##","\n###","\n\n", "\n", "|","。", "！", "？", ".", "!", "?", " ", ""],
         )
 
         all_chunks = []

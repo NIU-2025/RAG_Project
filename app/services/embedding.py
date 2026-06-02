@@ -14,33 +14,12 @@ def _detect_device() -> str:
     global _EMBEDDING_DEVICE
     if _EMBEDDING_DEVICE is not None:
         return _EMBEDDING_DEVICE
-    try:
-        import torch
-        if torch.cuda.is_available():
-            vram_mb = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
-            logger.info(f"Embedding: CUDA 可用, 显存={vram_mb}MB")
-            _EMBEDDING_DEVICE = "cuda"
-            return _EMBEDDING_DEVICE
-    except Exception:
-        pass
     _EMBEDDING_DEVICE = "cpu"
+    logger.info("Embedding: 使用 CPU 推理（4GB 显存不足以承载 BGE-M3，GPU 留给 Reranker）")
     return _EMBEDDING_DEVICE
 
 
 def _detect_batch_size() -> int:
-    device = _detect_device()
-    if device == "cuda":
-        try:
-            import torch
-            vram_mb = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
-            if vram_mb < 4000:
-                return 8
-            elif vram_mb < 8000:
-                return 16
-            else:
-                return 32
-        except Exception:
-            return 8
     return 4
 
 
@@ -55,6 +34,7 @@ def _get_local_model():
         model_name = settings.EMBEDDING_MODEL
         device = _detect_device()
         logger.info(f"Embedding 模型首次加载: {model_name} device={device}")
+        logger.info("  模型文件约 2.1GB，CPU 加载预计 20-60 秒（SSD）或 60-120 秒（HDD），请耐心等待...")
 
         config_path = try_to_load_from_cache(model_name, "config.json")
         if config_path and os.path.isfile(config_path):
