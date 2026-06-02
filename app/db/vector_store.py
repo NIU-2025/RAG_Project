@@ -56,14 +56,14 @@ class VectorStore:
         top_k: int = 5,
         where: Optional[Dict] = None,
     ) -> Dict:
-        collection = cls.get_collection(kb_id)
+        collection = cls.get_collection(kb_id) #获取集合
         kwargs = {
             "query_embeddings": [query_embedding],
             "n_results": top_k,
             "include": ["documents", "metadatas", "distances"],
         }
         if where:
-            kwargs["where"] = where
+            kwargs["where"] = where #添加查询条件 ，根据文件类型或标签筛选
         t_query = time.perf_counter()
 
         '''
