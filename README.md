@@ -92,6 +92,15 @@ npm run dev
 
 前端地址：http://localhost:5173
 
+前端页面展示
+<img width="1879" height="867" alt="image" src="https://github.com/user-attachments/assets/b9a7c488-2e4f-4179-a745-4ac32a3bd179" />
+
+<img width="1869" height="838" alt="image" src="https://github.com/user-attachments/assets/a859d3c9-0c7f-4010-a355-b769f4d44762" />
+<img width="1895" height="873" alt="image" src="https://github.com/user-attachments/assets/942ea2d8-60af-4e4e-b125-28267ae384a4" />
+
+
+
+
 ## 目录结构
 
 ```
