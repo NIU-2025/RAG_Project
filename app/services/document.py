@@ -60,21 +60,40 @@ def _sync_process_doc(doc_id: int):
         if not parsed.pages:
             return False, "文档解析结果为空"
 
-        # 2. 分块
+        # 2. 分块（block-aware：表格/OCR 作为原子 chunk，纯文本按递归切分）
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.CHUNK_SIZE,
             chunk_overlap=settings.CHUNK_OVERLAP,
             separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""],
         )
 
-        all_chunks = []
+        all_chunks = []  # (content, page_num, source_type)
         for page in parsed.pages:
-            if not page.content.strip():
-                continue
-            splits = splitter.split_text(page.content)
-            for split in splits:
-                if split.strip():
-                    all_chunks.append((split.strip(), page.page_num))
+            if page.blocks:
+                # 新解析器：按 ContentBlock 类型差异化处理
+                for block in page.blocks:
+                    if not block.content.strip():
+                        continue
+                    if block.type == "table":
+                        # 表格作为原子 chunk，不跨表切分
+                        all_chunks.append((block.content.strip(), page.page_num, "table"))
+                    elif block.type == "image_text":
+                        # OCR 文字作为原子 chunk
+                        all_chunks.append((block.content.strip(), page.page_num, "image_text"))
+                    else:
+                        # 纯文本：正常递归切分
+                        splits = splitter.split_text(block.content)
+                        for split in splits:
+                            if split.strip():
+                                all_chunks.append((split.strip(), page.page_num, "text"))
+            else:
+                # 旧解析器（无 blocks，向后兼容）
+                if not page.content.strip():
+                    continue
+                splits = splitter.split_text(page.content)
+                for split in splits:
+                    if split.strip():
+                        all_chunks.append((split.strip(), page.page_num, "text"))
 
         if not all_chunks:
             return False, "文档分块结果为空"
@@ -90,7 +109,7 @@ def _sync_process_doc(doc_id: int):
         chroma_metadatas = []
         db_chunks = []
 
-        for i, ((content, page_num), embedding) in enumerate(zip(all_chunks, embeddings)):
+        for i, ((content, page_num, source_type), embedding) in enumerate(zip(all_chunks, embeddings)):
             chroma_id = f"doc{doc_id}_chunk{i}_{_uuid.uuid4().hex[:8]}"
             chroma_ids.append(chroma_id)
             chroma_metadatas.append({
@@ -100,6 +119,7 @@ def _sync_process_doc(doc_id: int):
                 "file_type": doc.file_type,
                 "page_num": page_num or 0,
                 "chunk_index": i,
+                "source_type": source_type,
                 "tags": doc.tags or "",
             })
             db_chunks.append(DocumentChunk(
@@ -194,7 +214,7 @@ def _sync_process_audio_doc(doc_id: int, asr_text: str):
             splits = splitter.split_text(page.content)
             for split in splits:
                 if split.strip():
-                    all_chunks.append((split.strip(), page.page_num or 0))
+                    all_chunks.append((split.strip(), page.page_num or 0, "text"))
 
         if not all_chunks:
             raise ValueError("文档分块结果为空")
@@ -204,7 +224,7 @@ def _sync_process_audio_doc(doc_id: int, asr_text: str):
 
         chroma_ids = []
         chroma_metadatas = []
-        for i, ((content, page_num), embedding) in enumerate(zip(all_chunks, embeddings)):
+        for i, ((content, page_num, source_type), embedding) in enumerate(zip(all_chunks, embeddings)):
             chroma_id = f"doc{doc_id}_chunk{i}_{_uuid.uuid4().hex[:8]}"
             chroma_ids.append(chroma_id)
             chroma_metadatas.append({
@@ -214,6 +234,7 @@ def _sync_process_audio_doc(doc_id: int, asr_text: str):
                 "file_type": doc.file_type,
                 "page_num": page_num,
                 "chunk_index": i,
+                "source_type": source_type,
                 "tags": doc.tags or "",
             })
 
@@ -225,7 +246,7 @@ def _sync_process_audio_doc(doc_id: int, asr_text: str):
             metadatas=chroma_metadatas,
         )
 
-        for i, (content, page_num) in enumerate(all_chunks):
+        for i, (content, page_num, _) in enumerate(all_chunks):
             session.add(DocumentChunk(
                 doc_id=doc_id,
                 kb_id=doc.kb_id,

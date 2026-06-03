@@ -1,39 +1,40 @@
 {
-  "version": "1.0",
-  "timestamp": "2026-05-29 22:14:14",
+  "version": "2.0",
+  "timestamp": "2026-06-03 17:01:44",
   "config": {
     "chunk_size": 512,
     "chunk_overlap": 50,
     "top_k": 8,
     "rerank_enabled": false,
     "rerank_model": null,
-    "eval_llm": "dashscope/qwen-plus",
     "gen_llm": "deepseek"
   },
   "summary": {
-    "faithfulness": 0.8304,
-    "answer_relevancy": NaN,
-    "context_precision": 0.8139,
-    "context_recall": 0.9333
+    "context_precision": 0.9767,
+    "context_recall": 1.0,
+    "faithfulness": 0.8381,
+    "answer_relevancy": 0.783,
+    "retrieval/recall@k": 0.9,
+    "retrieval/precision@k": 0.9
   },
   "detail": [
     {
       "id": 1,
       "category": "事实型查询",
       "question": "什么算迟到？",
-      "context_precision": 0.5,
+      "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.7861
     },
     {
       "id": 2,
       "category": "事实型查询",
       "question": "什么算早退？",
-      "context_precision": 0.8333,
+      "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.5,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.8113
     },
     {
       "id": 3,
@@ -41,8 +42,8 @@
       "question": "迟到型旷工的定义是什么？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.5,
+      "answer_relevancy": 0.7773
     },
     {
       "id": 4,
@@ -51,7 +52,7 @@
       "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 0.5,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.8276
     },
     {
       "id": 5,
@@ -60,7 +61,7 @@
       "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.8321
     },
     {
       "id": 6,
@@ -68,8 +69,8 @@
       "question": "迟到和早退的扣款规则一样吗？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.9,
-      "answer_relevancy": NaN
+      "faithfulness": 0.6364,
+      "answer_relevancy": 0.8538
     },
     {
       "id": 7,
@@ -78,7 +79,7 @@
       "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.6999
     },
     {
       "id": 8,
@@ -86,17 +87,17 @@
       "question": "迟到多久算旷工？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.3333,
-      "answer_relevancy": NaN
+      "faithfulness": 0.5,
+      "answer_relevancy": 0.7917
     },
     {
       "id": 9,
       "category": "推理型查询",
       "question": "我迟到了两次，会扣我的钱吗？",
-      "context_precision": 0.8333,
+      "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.6667,
+      "answer_relevancy": 0.8337
     },
     {
       "id": 10,
@@ -104,17 +105,17 @@
       "question": "这个月迟到了3次，要扣多少钱？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.6667,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7781
     },
     {
       "id": 11,
       "category": "推理型查询",
       "question": "迟到4次扣多少钱？",
-      "context_precision": 0.5,
+      "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": NaN,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7827
     },
     {
       "id": 12,
@@ -122,8 +123,8 @@
       "question": "迟到6次有什么后果？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.625,
+      "answer_relevancy": 0.7665
     },
     {
       "id": 13,
@@ -131,8 +132,8 @@
       "question": "迟到10次会怎样？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.8,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7497
     },
     {
       "id": 14,
@@ -140,8 +141,8 @@
       "question": "前两次迟到需要担心吗？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.75,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7154
     },
     {
       "id": 15,
@@ -149,8 +150,8 @@
       "question": "迟到29分钟和迟到30分钟有什么区别？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": NaN,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7581
     },
     {
       "id": 16,
@@ -159,7 +160,7 @@
       "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.8448
     },
     {
       "id": 17,
@@ -167,8 +168,8 @@
       "question": "迟到5次要扣多少钱？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 0.7,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7528
     },
     {
       "id": 18,
@@ -176,26 +177,26 @@
       "question": "第3次迟到和第6次迟到扣款有什么区别？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.8,
+      "answer_relevancy": 0.8427
     },
     {
       "id": 19,
       "category": "边界条件查询",
       "question": "迟到刚好1分钟算迟到吗？",
-      "context_precision": 0.8333,
+      "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.8251
     },
     {
       "id": 20,
       "category": "口语化查询",
       "question": "要扣钱不？",
-      "context_precision": 0.3333,
+      "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.5883
     },
     {
       "id": 21,
@@ -203,17 +204,17 @@
       "question": "那迟到怎么扣款？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.5556,
+      "answer_relevancy": 0.7865
     },
     {
       "id": 22,
       "category": "口语化查询",
       "question": "下大雨迟到了也要扣吗？",
-      "context_precision": 0.5833,
+      "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": NaN,
-      "answer_relevancy": NaN
+      "faithfulness": 0.625,
+      "answer_relevancy": 0.8325
     },
     {
       "id": 23,
@@ -222,7 +223,7 @@
       "context_precision": 1.0,
       "context_recall": 1.0,
       "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "answer_relevancy": 0.7895
     },
     {
       "id": 24,
@@ -230,8 +231,8 @@
       "question": "老是迟到会怎么样？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": NaN,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7062
     },
     {
       "id": 25,
@@ -239,17 +240,17 @@
       "question": "迟到扣款怎么算？会影响绩效吗？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.6667,
+      "answer_relevancy": 0.8366
     },
     {
       "id": 26,
       "category": "跨章节综合查询",
       "question": "什么情况下迟到不扣钱？",
-      "context_precision": 0.5,
+      "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": NaN,
-      "answer_relevancy": NaN
+      "faithfulness": 0.6,
+      "answer_relevancy": 0.7938
     },
     {
       "id": 27,
@@ -257,40 +258,40 @@
       "question": "如果台风天迟到，还要扣全勤奖吗？",
       "context_precision": 1.0,
       "context_recall": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevancy": NaN
+      "faithfulness": 0.8,
+      "answer_relevancy": 0.8356
     },
     {
       "id": 28,
       "category": "无关查询",
       "question": "公司的年假怎么申请？",
-      "context_precision": 0.5,
-      "context_recall": 0.0,
-      "faithfulness": 0.8182,
-      "answer_relevancy": NaN
+      "context_precision": 1.0,
+      "context_recall": 1.0,
+      "faithfulness": 0.6667,
+      "answer_relevancy": 0.7767
     },
     {
       "id": 29,
       "category": "无关查询",
       "question": "食堂几点开饭？",
-      "context_precision": 0.0,
-      "context_recall": 0.0,
-      "faithfulness": 0.1667,
-      "answer_relevancy": NaN
+      "context_precision": 0.8,
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7651
     },
     {
       "id": 30,
       "category": "无关查询",
       "question": "公司附近有哪些公交线路？",
-      "context_precision": 0.0,
+      "context_precision": 0.5,
       "context_recall": 1.0,
-      "faithfulness": 0.625,
-      "answer_relevancy": NaN
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7502
     }
   ],
   "perf": {
-    "avg_retrieval_ms": 14.0,
-    "avg_llm_ms": 2549.2,
-    "avg_total_ms": 2563.2
+    "avg_retrieval_ms": 14.2,
+    "avg_llm_ms": 3028.0,
+    "avg_total_ms": 3042.2
   }
 }

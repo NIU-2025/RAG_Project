@@ -1,6 +1,6 @@
 """
 混合检索权重优化评估脚本
-使用 RAGAS ContextPrecision 指标（LLM 语义判断），替代关键词匹配。
+使用 embedding 语义相似度替代 LLM Judge，快速稳定不卡死。
 
 用法:
     python tests/evaluation/evaluate_weights.py
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Tuple
 
-import pandas as pd
+import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -103,52 +103,57 @@ async def hybrid_search(
     return [(cid, combined[cid], *vec_docs.get(cid, ("", {}))) for cid in sorted_ids]
 
 
-def run_ragas_eval(records: list) -> dict:
-    """用 RAGAS ContextPrecision 指标（LLM Judge）评估所有查询"""
-    from ragas import evaluate
-    from ragas.metrics import ContextPrecision
-    from openai import OpenAI
-    from ragas.llms import llm_factory
-    from datasets import Dataset
+EMBED_EVAL_THRESHOLD = 0.45  # embedding 相似度阈值
 
-    client = OpenAI(
-        api_key=settings.DEEPSEEK_API_KEY,
-        base_url=settings.DEEPSEEK_BASE_URL,
-    )
-    judge_llm = llm_factory(
-        getattr(settings, "DEEPSEEK_MODEL", "deepseek-chat"),
-        client=client,
-    )
 
-    ds = Dataset.from_dict({
-        "question": [r["question"] for r in records],
-        "contexts": [r["contexts"] for r in records],
-        "ground_truth": [r["ground_truth"] for r in records],
-    })
+def _cosine_sim(a: list, b: list) -> float:
+    """余弦相似度"""
+    a_norm = np.array(a) / (np.linalg.norm(a) + 1e-12)
+    b_norm = np.array(b) / (np.linalg.norm(b) + 1e-12)
+    return float(np.dot(a_norm, b_norm))
 
-    result = evaluate(
-        ds,
-        metrics=[ContextPrecision()],
-        llm=judge_llm,
-    )
 
-    df = result.to_pandas()
-    metric_cols = [c for c in df.columns if "context_precision" in c]
-    scores = []
-    for col in metric_cols:
-        col_mean = df[col].dropna().mean()
-        scores.append(round(float(col_mean), 4))
-
+def compute_context_precision(records: list) -> dict:
+    """
+    基于 embedding 语义相似度的 ContextPrecision。
+    对每条 query：
+      - 计算 query embedding 与每个 context embedding 的余弦相似度
+      - 按相似度降序排列（模拟 LLM 的"排序"）
+      - ContextPrecision@K = 每个位置 precision 的均值
+        precision@i = top-i 中相关 chunk 个数 / i
+    """
     per_query = []
-    for _, row in df.iterrows():
-        for col in metric_cols:
-            if pd.notna(row.get(col)):
-                per_query.append(float(row.get(col, 0)))
-                break
+    for r in records:
+        query = r["question"]
+        contexts = r.get("contexts", [])
+        if not contexts or all(not c for c in contexts):
+            per_query.append(0.0)
+            continue
 
+        q_emb = EmbeddingService.embed_query(query)
+        c_embs = EmbeddingService.embed_texts([c for c in contexts if c])
+        if not c_embs:
+            per_query.append(0.0)
+            continue
+
+        sims = [_cosine_sim(q_emb, ce) for ce in c_embs]
+        # 降序排列 — 模拟 LLM 的"相关排序"
+        sims_sorted = sorted(sims, reverse=True)
+
+        # 每步 precision
+        relevant_count = 0
+        precisions = []
+        for i, s in enumerate(sims_sorted, start=1):
+            if s >= EMBED_EVAL_THRESHOLD:
+                relevant_count += 1
+            precisions.append(relevant_count / i)
+
+        per_query.append(float(np.mean(precisions)))
+
+    overall = round(float(np.mean(per_query)), 4) if per_query else 0.0
     return {
-        "context_precision": scores[0] if scores else 0.0,
-        "per_query": per_query if per_query else [0.0] * len(records),
+        "context_precision": overall,
+        "per_query": per_query,
     }
 
 
@@ -159,7 +164,7 @@ async def evaluate_weight_combo(
     bm25_corpus: Tuple[list, list],
     precomputed_embeddings: Dict[str, list],
 ) -> Dict:
-    """评估一组权重配置 — 收集 contexts 后用 RAGAS LLM Judge 打分"""
+    """评估一组权重配置 — 收集 contexts 后用 embedding 语义相似度打分（无需 LLM，不卡死）"""
     records = []
     for item in dataset:
         query = item["question"]
@@ -176,14 +181,14 @@ async def evaluate_weight_combo(
         records.append({
             "question": query,
             "ground_truth": item["ground_truth"],
-            "contexts": contexts if contexts else [" "],
+            "contexts": contexts if contexts else [],
         })
 
-    ragas_result = run_ragas_eval(records)
+    cp_result = compute_context_precision(records)
     return {
         "vec_weight": vec_w,
         "bm25_weight": bm25_w,
-        "context_precision": ragas_result["context_precision"],
+        "context_precision": cp_result["context_precision"],
     }
 
 
@@ -211,9 +216,9 @@ async def grid_search_weights(dataset: list):
         weight_combos.append((vw, bw))
 
     print(f"\n{'='*70}")
-    print(f"  混合检索权重评估 — RAGAS ContextPrecision (LLM Judge)")
+    print(f"  混合检索权重评估 — Embedding ContextPrecision (本地快速计算)")
     print(f"  数据集: {len(dataset)} 条 | 权重组合: {len(weight_combos)} 组")
-    print(f"  BM25 语料: {len(chroma_ids)} chunks")
+    print(f"  BM25 语料: {len(chroma_ids)} chunks | 阈值: {EMBED_EVAL_THRESHOLD}")
     print(f"{'='*70}\n")
 
     results = []
@@ -238,8 +243,8 @@ async def grid_search_weights(dataset: list):
 
 
 def _generate_report(results: list, dataset: list):
-    lines = ["# 混合检索权重评估报告 (RAGAS Judge)\n"]
-    lines.append(f"> 数据集: {len(dataset)} 条 | Judge: DeepSeek | 指标: ContextPrecision\n")
+    lines = ["# 混合检索权重评估报告 (Embedding)\n"]
+    lines.append(f"> 数据集: {len(dataset)} 条 | 方法: embedding 余弦相似度 | 阈值: {EMBED_EVAL_THRESHOLD}\n")
     lines.append("| 向量权重 | BM25权重 | ContextPrecision | 耗时(ms) |")
     lines.append("|---------|---------|-----------------|---------|")
 

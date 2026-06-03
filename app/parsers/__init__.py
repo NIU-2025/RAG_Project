@@ -1,4 +1,4 @@
-from app.parsers.base import BaseParser, ParsedDocument
+from app.parsers.base import BaseParser, ParsedDocument, ParsedPage, ContentBlock
 from app.parsers.pdf import PDFParser
 from app.parsers.word import WordParser
 from app.parsers.excel import ExcelParser, CSVParser

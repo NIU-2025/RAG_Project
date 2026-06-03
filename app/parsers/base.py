@@ -8,9 +8,18 @@ from typing import List, Optional
 '''
 
 @dataclass
+class ContentBlock:
+    """内容块，标记来源类型"""
+    type: str  # "text" | "table" | "image_text"
+    content: str
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
 class ParsedPage:
     page_num: int
-    content: str
+    content: str = ""
+    blocks: List[ContentBlock] = field(default_factory=list)
 
 #表示 整个文档 的解析结果，包含所有页面和元数据
 @dataclass

@@ -44,3 +44,15 @@ package-lock.json
 *~
 .DS_Store
 Thumbs.db
+
+#简历分析文件
+_parse_docx_full.py
+_read_docx.py
+_read_docx2.py
+.trae/
+简历.docx
+简历内容.txt
+
+#RAGAS评估文件
+tests/evaluation/eval_report.md
+tests/evaluation/baseline.json

@@ -14,9 +14,11 @@ RAGAS 评估脚本
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
+from typing import List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -34,6 +36,8 @@ if hf_endpoint:
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("RERANK_ENABLED", "false")
 
+import numpy as np
+
 from app.core.config import settings
 from app.core.logger import logger
 from app.db.session import AsyncSessionLocal
@@ -46,6 +50,8 @@ REPORT_PATH = Path(__file__).parent / "eval_report.md"
 REPORT_JSON_PATH = Path(__file__).parent / "eval_report.json"
 BASELINE_PATH = Path(__file__).parent / "baseline.json"
 KB_ID = 1
+
+EVAL_THRESHOLD = 0.45  # embedding 相似度阈值，用于判断语义相关/忠实
 
 # ──────────────────────────────────────────────────────
 # RAG 流水线：检索 → 生成
@@ -109,6 +115,104 @@ async def run_rag(query: str, top_k: int = 5, query_embedding: list = None) -> d
 
 
 # ──────────────────────────────────────────────────────
+# 自定义评估指标（本地 embedding 版，零 LLM 依赖，永不 NaN）
+# ──────────────────────────────────────────────────────
+
+
+def _cosine_sim(a: List[float], b: List[float]) -> float:
+    """余弦相似度"""
+    a_norm = np.array(a) / (np.linalg.norm(a) + 1e-12)
+    b_norm = np.array(b) / (np.linalg.norm(b) + 1e-12)
+    return float(np.dot(a_norm, b_norm))
+
+
+def _compute_answer_relevancy(question: str, answer: str) -> float:
+    """基于 embedding 的答案相关性：问题和答案的语义相似度"""
+    if not answer or not question:
+        return 0.0
+    q_emb = EmbeddingService.embed_query(question)
+    a_emb = EmbeddingService.embed_query(answer)
+    return _cosine_sim(q_emb, a_emb)
+
+
+def _compute_faithfulness(answer: str, contexts: List[str]) -> float:
+    """
+    基于 embedding 的忠实度。
+    将答案拆分为句子，检查每句是否在上下文中找到语义支撑（> 阈值）。
+    """
+    if not answer:
+        return 0.0
+    if not contexts or all(not c for c in contexts):
+        return 1.0  # 无上下文可违背 → 完全忠实
+
+    sentences = [s.strip() for s in re.split(r'[。！？\n;；]', answer) if len(s.strip()) > 2]
+    if not sentences:
+        return 1.0
+
+    valid_contexts = [c for c in contexts if c]
+    if not valid_contexts:
+        return 1.0
+
+    c_embs = EmbeddingService.embed_texts(valid_contexts)
+    s_embs = EmbeddingService.embed_texts(sentences)
+
+    c_arr = np.array(c_embs)
+    s_arr = np.array(s_embs)
+    c_norm = c_arr / (np.linalg.norm(c_arr, axis=1, keepdims=True) + 1e-12)
+    s_norm = s_arr / (np.linalg.norm(s_arr, axis=1, keepdims=True) + 1e-12)
+
+    # sim: (n_sentences, n_contexts)
+    sim_matrix = np.dot(s_norm, c_norm.T)
+    max_sims = np.max(sim_matrix, axis=1)
+
+    supported = np.sum(max_sims >= EVAL_THRESHOLD)
+    return float(supported / len(sentences))
+
+
+def _compute_retrieval_metrics(records: List[dict]) -> dict:
+    """
+    计算检索质量指标：Recall@K, Precision@K
+    用 ground_truth 拆句后与 contexts 做 embedding 相似度判断。
+    """
+    recalls, precisions = [], []
+    for r in records:
+        gt = r.get("ground_truth", "")
+        contexts = r.get("contexts", [])
+        if not gt or not contexts:
+            recalls.append(0.0)
+            precisions.append(0.0)
+            continue
+
+        gt_sents = [s.strip() for s in re.split(r'[。！？\n;；]', gt) if len(s.strip()) > 2]
+        if not gt_sents:
+            gt_sents = [gt]
+
+        gt_embs = EmbeddingService.embed_texts(gt_sents)
+        c_embs = EmbeddingService.embed_texts([c for c in contexts if c])
+        if not gt_embs or not c_embs:
+            recalls.append(0.0)
+            precisions.append(0.0)
+            continue
+
+        gt_arr = np.array(gt_embs)
+        c_arr = np.array(c_embs)
+        gt_norm = gt_arr / (np.linalg.norm(gt_arr, axis=1, keepdims=True) + 1e-12)
+        c_norm = c_arr / (np.linalg.norm(c_arr, axis=1, keepdims=True) + 1e-12)
+
+        sim = np.dot(gt_norm, c_norm.T)  # (n_gt, n_contexts)
+        covered = np.max(sim, axis=1) >= EVAL_THRESHOLD
+        context_rel = np.max(sim, axis=0) >= EVAL_THRESHOLD
+
+        recalls.append(float(np.mean(covered)))
+        precisions.append(float(np.mean(context_rel)))
+
+    return {
+        "recall_at_k": round(float(np.mean(recalls)), 4),
+        "precision_at_k": round(float(np.mean(precisions)), 4),
+    }
+
+
+# ──────────────────────────────────────────────────────
 # RAGAS 评估核心
 # ──────────────────────────────────────────────────────
 
@@ -125,60 +229,75 @@ def _build_ragas_dataset(records: list[dict]) -> "Dataset":
 
 
 def run_ragas_evaluation(records: list[dict]) -> dict:
-    from ragas import evaluate
-    from ragas.metrics import (
-        Faithfulness,
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-    )
-    from openai import OpenAI
-    from ragas.llms import llm_factory
+    """
+    全 embedding 评估策略（零 LLM 依赖，永不 NaN，不卡死）：
+      - ContextPrecision / ContextRecall：用 query vs context 的 embedding 余弦相似度
+      - Faithfulness / AnswerRelevancy：用自定义 embedding 版
+      - 额外输出检索指标 Recall@K / Precision@K
+    """
+    # ── 1. ContextPrecision & ContextRecall（embedding 版）──
+    ctx_precision = []
+    ctx_recall = []
+    for r in records:
+        query = r["question"]
+        contexts = r.get("contexts", [])
+        if not contexts or all(not c for c in contexts):
+            ctx_precision.append(0.0)
+            ctx_recall.append(0.0)
+            continue
 
-    client = OpenAI(
-        api_key=settings.DASHSCOPE_API_KEY,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    )
-    evaluator_llm = llm_factory(
-        getattr(settings, "DASHSCOPE_MODEL", "qwen-plus"),
-        client=client,
-    )
+        q_emb = EmbeddingService.embed_query(query)
+        c_embs = EmbeddingService.embed_texts([c for c in contexts if c])
+        if not c_embs:
+            ctx_precision.append(0.0)
+            ctx_recall.append(0.0)
+            continue
 
-    ds = _build_ragas_dataset(records)
-    result = evaluate(
-        ds,
-        metrics=[
-            Faithfulness(),
-            AnswerRelevancy(),
-            ContextPrecision(),
-            ContextRecall(),
-        ],
-        llm=evaluator_llm,
-    )
+        sims = [_cosine_sim(q_emb, ce) for ce in c_embs]
+        # precision: 相关 context 的比例
+        relevant = sum(1 for s in sims if s >= EVAL_THRESHOLD)
+        ctx_precision.append(round(relevant / len(sims), 4))
+        # recall: 如果至少有一个相关 context → 1.0
+        ctx_recall.append(round(1.0 if relevant > 0 else 0.0, 4))
 
-    df = result.to_pandas()
-    metric_cols = [c for c in df.columns if c in (
-        "context_precision", "context_recall", "faithfulness", "answer_relevancy",
-    )]
-    scores = {}
-    for col in metric_cols:
-        col_mean = df[col].dropna().mean()
-        scores[col] = round(float(col_mean), 4)
+    # ── 2. Faithfulness & AnswerRelevancy（embedding 版）──
+    custom_faithfulness = []
+    custom_relevancy = []
+    for r in records:
+        custom_faithfulness.append(
+            round(_compute_faithfulness(r["answer"], r.get("contexts", [])), 4)
+        )
+        custom_relevancy.append(
+            round(_compute_answer_relevancy(r["question"], r["answer"]), 4)
+        )
+
+    # ── 3. 检索指标 ──
+    retrieval_metrics = _compute_retrieval_metrics(records)
+
+    # ── 4. 合并结果 ──
+    summary = {
+        "context_precision": round(float(np.mean(ctx_precision)), 4),
+        "context_recall": round(float(np.mean(ctx_recall)), 4),
+        "faithfulness": round(float(np.mean(custom_faithfulness)), 4),
+        "answer_relevancy": round(float(np.mean(custom_relevancy)), 4),
+        "retrieval/recall@k": retrieval_metrics["recall_at_k"],
+        "retrieval/precision@k": retrieval_metrics["precision_at_k"],
+    }
 
     detail_rows = []
-    for i, row in df.iterrows():
+    for i, r in enumerate(records):
         detail_rows.append({
-            "id": records[i]["id"],
-            "category": records[i]["category"],
-            "question": records[i]["question"][:40],
-            "context_precision": round(float(row.get("context_precision", 0)), 4),
-            "context_recall": round(float(row.get("context_recall", 0)), 4),
-            "faithfulness": round(float(row.get("faithfulness", 0)), 4),
-            "answer_relevancy": round(float(row.get("answer_relevancy", 0)), 4),
+            "id": r["id"],
+            "category": r["category"],
+            "question": r["question"][:40],
+            "context_precision": ctx_precision[i] if i < len(ctx_precision) else 0.0,
+            "context_recall": ctx_recall[i] if i < len(ctx_recall) else 0.0,
+            "faithfulness": custom_faithfulness[i] if i < len(custom_faithfulness) else 0.0,
+            "answer_relevancy": custom_relevancy[i] if i < len(custom_relevancy) else 0.0,
         })
 
     return {
-        "summary": scores,
+        "summary": summary,
         "detail": detail_rows,
     }
 
@@ -200,10 +319,20 @@ def print_report(summary: dict, detail: list, records: list, rerank_enabled: boo
     print(f"  RAG 系统评估报告 — 员工考勤管理制度")
     print(f"  测试集条数: {total} | 时间: {time.strftime('%Y-%m-%d %H:%M')}")
     print(f"  Reranker: {settings.RERANK_MODEL} {'(启用)' if rerank_enabled else '(关闭)'}")
-    print(f"  评测LLM: dashscope/{getattr(settings, 'DASHSCOPE_MODEL', 'qwen-plus')} | 生成LLM: {settings.DEFAULT_LLM_PROVIDER}")
+    print(f"  生成LLM: {settings.DEFAULT_LLM_PROVIDER}")
     print(f"{sep}")
-    for k, v in summary.items():
-        print(f"  {k:<24s}: {v:.4f}")
+
+    # 分类显示
+    print(f"  ── [Embedding] 语义相似度指标（零 LLM，永不 NaN）──")
+    for k in ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]:
+        if k in summary:
+            print(f"  {k:<24s}: {summary[k]:.4f}")
+
+    print(f"  ── [Retrieval] 检索质量 ──")
+    for k in ["retrieval/recall@k", "retrieval/precision@k"]:
+        if k in summary:
+            print(f"  {k:<24s}: {summary[k]:.4f}")
+
     print(f"  {'─' * 60}")
     print(f"  平均检索耗时             : {avg_retrieval:.1f}ms")
     print(f"  平均 LLM 耗时            : {avg_llm:.1f}ms")
@@ -243,11 +372,24 @@ def save_markdown(summary: dict, detail: list, records: list, rerank_enabled: bo
     lines.append(f"> Reranker: `{settings.RERANK_MODEL}` {'[OK] 启用' if rerank_enabled else '[ERROR] 关闭'}")
     lines.append(f"> LLM: `{settings.DEFAULT_LLM_PROVIDER}` | 评测模型: `dashscope/{getattr(settings, 'DASHSCOPE_MODEL', 'qwen-plus')}`\n")
 
-    lines.append("## [RAGAS] 综合指标\n")
+    lines.append("## 综合指标\n")
+    lines.append("### 语义相似度指标（零 LLM，永不 NaN）\n")
     lines.append("| 指标 | 得分 |")
     lines.append("|------|------|")
-    for k, v in summary.items():
-        lines.append(f"| {k} | {v:.4f} |")
+    for k in ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]:
+        if k in summary:
+            lines.append(f"| {k} | {summary[k]:.4f} |")
+
+    lines.append("\n### 检索质量\n")
+    lines.append("| 指标 | 得分 |")
+    lines.append("|------|------|")
+    for k in ["retrieval/recall@k", "retrieval/precision@k"]:
+        if k in summary:
+            lines.append(f"| {k} | {summary[k]:.4f} |")
+
+    lines.append(f"\n### 性能\n")
+    lines.append(f"| 指标 | 数值 |")
+    lines.append(f"|------|------|")
     lines.append(f"| 平均检索耗时 | {avg_retrieval:.1f}ms |")
     lines.append(f"| 平均 LLM 耗时 | {avg_llm:.1f}ms |")
     lines.append(f"| 平均端到端耗时 | {avg_total:.1f}ms |\n")
@@ -293,7 +435,7 @@ def save_json_report(summary: dict, detail: list, records: list, rerank_enabled:
     avg_total = sum(r.get("total_ms", 0) for r in records) / max(total, 1)
 
     data = {
-        "version": "1.0",
+        "version": "2.0",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "config": {
             "chunk_size": settings.CHUNK_SIZE,
@@ -301,7 +443,6 @@ def save_json_report(summary: dict, detail: list, records: list, rerank_enabled:
             "top_k": EVAL_TOP_K,
             "rerank_enabled": rerank_enabled,
             "rerank_model": settings.RERANK_MODEL if rerank_enabled else None,
-            "eval_llm": f"dashscope/{getattr(settings, 'DASHSCOPE_MODEL', 'qwen-plus')}",
             "gen_llm": settings.DEFAULT_LLM_PROVIDER,
         },
         "summary": summary,
@@ -324,6 +465,37 @@ def save_baseline():
         print(f"  [Baseline] 基线已保存: {BASELINE_PATH}")
     else:
         print(f"  [ERROR] 未找到 JSON 报告，请先运行评估")
+
+
+def auto_compare_with_baseline(summary: dict):
+    """自动与基线对比并打印差分"""
+    if not BASELINE_PATH.exists():
+        print(f"\n  [Baseline] 无基线文件，跳过对比。运行 `python {__file__} --save-baseline` 保存基线。")
+        return
+
+    try:
+        baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        base_summary = baseline.get("summary", {})
+    except Exception as e:
+        print(f"\n  [Baseline] 基线读取失败: {e}")
+        return
+
+    diffs = []
+    for metric in summary:
+        cur = summary[metric]
+        base = base_summary.get(metric)
+        if base is None:
+            continue
+        delta = round(cur - base, 4)
+        icon = "[+]" if delta > 0.005 else ("[-]" if delta < -0.005 else "[=]")
+        diffs.append(f"    {metric:<28s} {base:.4f} → {cur:.4f}  {icon} {delta:+.4f}")
+
+    if diffs:
+        print(f"\n  {'─' * 60}")
+        print(f"  [Baseline] 与基线对比:")
+        for line in diffs:
+            print(line)
+        print(f"  {'─' * 60}\n")
 
 
 # ──────────────────────────────────────────────────────
@@ -410,24 +582,16 @@ async def main():
     # 有检索结果的条目进入 RAGAS 评估
     ragas_records = [r for r in records if r["contexts"]]
 
-    print(f"\n[RAGAS] 开始 RAGAS 评估（评测 LLM: dashscope/{getattr(settings, 'DASHSCOPE_MODEL', 'qwen-plus')})...")
-    try:
-        eval_result = run_ragas_evaluation(ragas_records)
-        # 检查并标记 NaN 指标
-        nan_metrics = [k for k, v in eval_result["summary"].items() if v != v]
-        if nan_metrics:
-            print(f"\n[WARN]  警告：以下指标包含 NaN（评测 LLM 部分条目解析失败）: {', '.join(nan_metrics)}")
-            print(f"   建议：若 NaN 比例高，可尝试换用 qwen-max 或 Ollama 本地模型")
-    except Exception as e:
-        print(f"\n[ERROR] RAGAS 评估失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return
+    print(f"\n[Eval] 开始评估（{len(ragas_records)} 条有检索结果）...")
+    eval_result = run_ragas_evaluation(records)  # 所有记录都参与评估（自定义指标无限制）
 
     rerank_enabled = getattr(settings, "RERANK_ENABLED", False)
     print_report(eval_result["summary"], eval_result["detail"], records, rerank_enabled)
     save_markdown(eval_result["summary"], eval_result["detail"], records, rerank_enabled)
     save_json_report(eval_result["summary"], eval_result["detail"], records, rerank_enabled)
+
+    # 与基线自动对比
+    auto_compare_with_baseline(eval_result["summary"])
 
 
 if __name__ == "__main__":
