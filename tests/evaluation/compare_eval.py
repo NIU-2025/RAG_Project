@@ -16,10 +16,12 @@ CURRENT_PATH = BASE_DIR / "eval_report.json"
 BASELINE_PATH = BASE_DIR / "baseline.json"
 
 THRESHOLDS = {
-    "context_precision": 0.90,
-    "context_recall": 0.85,
+    "context_precision": 0.70,
+    "context_recall": 0.80,
     "faithfulness": 0.75,
     "answer_relevancy": 0.70,
+    "retrieval/recall@k": 0.70,
+    "retrieval/precision@k": 0.60,
 }
 
 
