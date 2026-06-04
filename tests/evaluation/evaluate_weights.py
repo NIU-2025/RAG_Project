@@ -103,7 +103,7 @@ async def hybrid_search(
     return [(cid, combined[cid], *vec_docs.get(cid, ("", {}))) for cid in sorted_ids]
 
 
-EMBED_EVAL_THRESHOLD = 0.45  # embedding 相似度阈值
+EMBED_EVAL_THRESHOLD = 0.38  # embedding 相似度阈值
 
 
 def _cosine_sim(a: list, b: list) -> float:

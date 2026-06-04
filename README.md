@@ -207,25 +207,68 @@ RAGProject/
           └─ 组装 Prompt → 流式输出回答
 ```
 
-## 评估体系
+## RAGAS 评估体系
 
-使用 RAGAS 框架进行检索质量评估：
+用于量化评估 RAG 系统检索质量与生成质量，支持基线对比，形成"评估 → 优化 → 对比 → 迭代"闭环。
 
-```bash
-# 权重网格搜索（推荐）
-python tests/evaluation/evaluate_weights.py
+### 评估指标
 
-# 完整 RAG 评估
-python tests/evaluation/evaluate_rag.py
+全指标基于本地 Embedding 余弦相似度计算（零 LLM 依赖，秒级完成，永不 NaN）：
 
-# 对比评估
-python tests/evaluation/compare_eval.py
+| 维度 | 指标 | 说明 | 理想值 |
+|------|------|------|--------|
+| 检索精度 | `context_precision` | 检索到的 chunks 中与 query 语义相关的比例 | > 0.90 |
+| 检索召回 | `context_recall` | 是否至少检索到一条相关 chunk | > 0.95 |
+| 生成忠实度 | `faithfulness` | 回答中的句子在上下文中有语义支撑的比例 | > 0.85 |
+| 回答相关性 | `answer_relevancy` | 回答整体与提问的语义相似度 | > 0.80 |
+| 检索召回 | `retrieval/recall@k` | 标注答案在检索结果中被召回的比例 | > 0.80 |
+| 检索精度 | `retrieval/precision@k` | 检索结果中与标注答案相关的比例 | > 0.70 |
+
+### 命令速查
+
+| 操作 | 命令 | 输出 |
+|------|------|------|
+| 运行评估 | `python tests/evaluation/evaluate_rag.py` | `eval_report.md` + `eval_report.json` |
+| 对比基线 | `python tests/evaluation/compare_eval.py` | 终端打印 diff |
+| 保存新基线 | `python tests/evaluation/evaluate_rag.py --save-baseline` | 覆盖 `baseline.json` |
+| 权重搜索 | `python tests/evaluation/evaluate_weights.py` | `weight_eval_report.md` |
+
+### 如何读报告
+
+**Step 1 — 分开看两个维度**
+
+不要混为一谈。先看检索层（context_precision / context_recall / retrieval/*），再看生成层（faithfulness / answer_relevancy）。检索差就调检索参数，生成差就调 prompt 或换 LLM。
+
+**Step 2 — 按类别看弱点**
+
+报告按 6 类查询（事实型、推理型、边界条件、口语化、跨章节综合、无关查询）分别统计，找到最差的类别定点优化。
+
+**Step 3 — 逐条定位**
+
+逐条表标记了每条数据的具体分数，找到最低的几条分析原因。
+
+**Step 4 — 对比基线验证优化**
+
+修改配置或代码后重新运行评估，用 `compare_eval.py` 查看每个指标的变化：
+
+```
+context_precision    0.9767 → 0.9800  [+] +0.0033  ← 提升
+faithfulness         0.8381 → 0.9100  [+] +0.0719  ← 优化有效
+answer_relevancy     0.7830 → 0.7950  [+] +0.0120  ← 轻微提升
 ```
 
-评估指标：
-- **ContextPrecision**：检索结果中相关上下文的比例（LLM Judge）
-- **Faithfulness**：生成回答是否忠实于检索上下文
-- **Answer Relevancy**：生成回答与问题的相关性
+### 基线管理
+
+- 首次运行 `evaluate_rag.py` 会自动生成 `baseline.json`（如果不存在）
+- 后续运行会自动与 `baseline.json` 对比，终端打印每个指标的变化
+- 优化后确认效果满意，执行 `--save-baseline` 覆盖旧基线
+- 基线文件存储在 `tests/evaluation/baseline.json`，建议随代码一起提交
+
+### 注意事项
+
+- 评估报告的分数是**相对参考值**，不是绝对真理。偶有假阳性（回答正确但指标偏低），需结合人工判断。
+- 修改 `CHUNK_SIZE` / `CHUNK_OVERLAP` / `RETRIEVAL_TOP_K` / prompt 后，都需要**重新分块或重启服务**再评估。
+- 修改 `.env` 中的 `DEFAULT_LLM_PROVIDER` 后，重启服务再评估。
 
 ## 技术栈
 
