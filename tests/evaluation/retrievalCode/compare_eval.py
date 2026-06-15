@@ -3,8 +3,8 @@
 
 用法:
     cd d:/AI_code/RAGProject
-    python tests/evaluation/compare_eval.py                  # 对比 eval_report.json vs baseline.json
-    python tests/evaluation/compare_eval.py --help           # 查看帮助
+    python tests/evaluation/retrievalCode/compare_eval.py                  # 对比 eval_report.json vs baseline.json
+    python tests/evaluation/retrievalCode/compare_eval.py --help           # 查看帮助
 """
 
 import json
