@@ -112,7 +112,7 @@ class Settings(BaseSettings):
 
     # 分块
     CHUNK_SIZE: int = 512
-    CHUNK_OVERLAP: int = 150
+    CHUNK_OVERLAP: int = 80
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -1,6 +1,6 @@
 import uuid
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from sqlalchemy import select
 from app.models.db import Document, DocumentChunk, KnowledgeBase, DocumentStatus
@@ -15,22 +15,90 @@ _process_pool = None
 
 
 def _get_process_pool():
-    """获取进程池（CPU 核数 - 1 个 worker，最少 2 个）"""
+    """获取线程池（CPU 核数 - 1 个 worker，最少 2 个）"""
     global _process_pool
     if _process_pool is None:
         workers = max(2, (os.cpu_count() or 4) - 1)
-        _process_pool = ProcessPoolExecutor(max_workers=workers)
-        logger.info(f"文档处理进程池已创建，workers={workers}")
+        _process_pool = ThreadPoolExecutor(max_workers=workers)
+        logger.info(f"文档处理线程池已创建，workers={workers}")
     return _process_pool
 
 
 # =============================================================================
-# 进程池中执行的同步函数（所有 CPU/IO 密集型操作在这里）
+# 线程池中执行的同步函数（所有 CPU/IO 密集型操作在这里）
 # =============================================================================
+
+def _is_markdown_content(text: str) -> bool:
+    """
+    通过内容嗅探判断文本是否包含 Markdown 标题结构。
+    用于 file_type 未能正确标记时的兜底检测。
+    """
+    import re
+    lines = text.strip().split("\n")
+    head = lines[:30]  # 取前 30 行判断
+    heading_count = sum(1 for line in head if re.match(r"^#{1,4}\s", line))
+    if heading_count >= 2:
+        return True
+    if heading_count == 1:
+        list_count = sum(
+            1 for line in head
+            if re.match(r"^\s*[-*+]\s", line) or re.match(r"^\s*\d+[\.\)]\s", line)
+        )
+        return list_count >= 2
+    return False
+
+
+def _chunk_markdown(text: str) -> list:
+    """
+    Markdown 文档专用分块策略。
+
+    第一级：MarkdownHeaderTextSplitter — 按 # / ## / ### / #### 标题层级切分，
+            保留标题层级元数据（h1/h2/h3/h4）。
+    第二级：超大块（> CHUNK_SIZE）再用 RecursiveCharacterTextSplitter 二次切分，
+            标题元数据继承给子块。
+
+    返回 [(content: str, heading_meta: dict), ...]
+    """
+    from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+
+    # 一级：按标题层级切分
+    header_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[
+            ("#", "h1"),
+            ("##", "h2"),
+            ("###", "h3"),
+            ("####", "h4"),
+        ],
+        strip_headers=False,  # 标题文本保留在 chunk 内容中
+    )
+    header_docs = header_splitter.split_text(text)
+
+    # 二级：超大块二次切分
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.CHUNK_SIZE,
+        chunk_overlap=min(settings.CHUNK_OVERLAP, 50),
+        separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""],
+    )
+
+    result = []
+    for doc in header_docs:
+        content = doc.page_content.strip()
+        if not content:
+            continue
+        if len(content) <= settings.CHUNK_SIZE:
+            result.append((content, dict(doc.metadata)))
+        else:
+            sub_splits = text_splitter.split_text(content)
+            for sub in sub_splits:
+                sub = sub.strip()
+                if sub:
+                    result.append((sub, dict(doc.metadata)))
+    return result
+
 
 def _sync_process_doc(doc_id: int):
     """
-    同步函数，运行在进程池中，执行文档解析 → 分块 → 向量化 → ChromaDB 写入。
+    同步函数，运行在线程池中，执行文档解析 → 分块 → 向量化 → ChromaDB 写入。
     完成后返回 (True, chunk_count) 或 (False, error_msg)。
     """
     from sqlalchemy.orm import Session
@@ -51,7 +119,7 @@ def _sync_process_doc(doc_id: int):
         if not doc:
             return False, "文档不存在"
 
-        logger.info(f"[进程池] 开始处理文档 [{doc_id}]: {doc.filename}")
+        logger.info(f"[线程池] 开始处理文档 [{doc_id}]: {doc.filename}")
 
         # 1. 解析文档
         parser = get_parser(doc.file_type)
@@ -60,45 +128,62 @@ def _sync_process_doc(doc_id: int):
         if not parsed.pages:
             return False, "文档解析结果为空"
 
-        # 2. 分块（block-aware：表格/OCR 作为原子 chunk，纯文本按递归切分）
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""],
-        )
+        # 2. 分块 — 按文档类型路由（Markdown → 标题层级切分，其他 → block-aware 切分）
+        is_md = doc.file_type.lower() == "md"
+        if not is_md:
+            is_md = _is_markdown_content(parsed.full_text)
 
-        all_chunks = []  # (content, page_num, source_type)
-        for page in parsed.pages:
-            if page.blocks:
-                # 新解析器：按 ContentBlock 类型差异化处理
-                for block in page.blocks:
-                    if not block.content.strip():
+        md_heading_metas = []
+
+        if is_md:
+            # Markdown：按标题层级切分，保留标题元数据
+            raw_text = parsed.full_text
+            if not raw_text.strip():
+                return False, "文档内容为空"
+            md_result = _chunk_markdown(raw_text)
+            all_chunks = [(content, 1, "markdown") for content, _ in md_result]
+            md_heading_metas = [meta for _, meta in md_result]
+            logger.info(f"[线程池] Markdown 文档 [{doc_id}]，按标题切分为 {len(all_chunks)} 块")
+        else:
+            # 非 Markdown：block-aware 分块（表格/OCR 原子 chunk，纯文本递归切分）
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=settings.CHUNK_SIZE,
+                chunk_overlap=settings.CHUNK_OVERLAP,
+                separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""],
+            )
+
+            all_chunks = []  # (content, page_num, source_type)
+            for page in parsed.pages:
+                if page.blocks:
+                    # 新解析器：按 ContentBlock 类型差异化处理
+                    for block in page.blocks:
+                        if not block.content.strip():
+                            continue
+                        if block.type == "table":
+                            # 表格作为原子 chunk，不跨表切分
+                            all_chunks.append((block.content.strip(), page.page_num, "table"))
+                        elif block.type == "image_text":
+                            # OCR 文字作为原子 chunk
+                            all_chunks.append((block.content.strip(), page.page_num, "image_text"))
+                        else:
+                            # 纯文本：正常递归切分
+                            splits = splitter.split_text(block.content)
+                            for split in splits:
+                                if split.strip():
+                                    all_chunks.append((split.strip(), page.page_num, "text"))
+                else:
+                    # 旧解析器（无 blocks，向后兼容）
+                    if not page.content.strip():
                         continue
-                    if block.type == "table":
-                        # 表格作为原子 chunk，不跨表切分
-                        all_chunks.append((block.content.strip(), page.page_num, "table"))
-                    elif block.type == "image_text":
-                        # OCR 文字作为原子 chunk
-                        all_chunks.append((block.content.strip(), page.page_num, "image_text"))
-                    else:
-                        # 纯文本：正常递归切分
-                        splits = splitter.split_text(block.content)
-                        for split in splits:
-                            if split.strip():
-                                all_chunks.append((split.strip(), page.page_num, "text"))
-            else:
-                # 旧解析器（无 blocks，向后兼容）
-                if not page.content.strip():
-                    continue
-                splits = splitter.split_text(page.content)
-                for split in splits:
-                    if split.strip():
-                        all_chunks.append((split.strip(), page.page_num, "text"))
+                    splits = splitter.split_text(page.content)
+                    for split in splits:
+                        if split.strip():
+                            all_chunks.append((split.strip(), page.page_num, "text"))
 
         if not all_chunks:
             return False, "文档分块结果为空"
 
-        logger.info(f"[进程池] 文档 [{doc_id}] 分块完成，共 {len(all_chunks)} 块")
+        logger.info(f"[线程池] 文档 [{doc_id}] 分块完成，共 {len(all_chunks)} 块")
 
         # 3. 向量化
         texts = [c[0] for c in all_chunks]
@@ -122,6 +207,11 @@ def _sync_process_doc(doc_id: int):
                 "source_type": source_type,
                 "tags": doc.tags or "",
             })
+            # Markdown：合并标题层级元数据（h1/h2/h3/h4）
+            if is_md and i < len(md_heading_metas):
+                chroma_metadatas[-1].update({
+                    k: v for k, v in md_heading_metas[i].items() if v
+                })
             db_chunks.append(DocumentChunk(
                 doc_id=doc_id,
                 kb_id=doc.kb_id,
@@ -157,7 +247,7 @@ def _sync_process_doc(doc_id: int):
             kb.doc_count = (kb.doc_count or 0) + 1
 
         session.commit()
-        logger.info(f"[进程池] 文档 [{doc_id}] 处理完成，{len(all_chunks)} 个向量已入库")
+        logger.info(f"[线程池] 文档 [{doc_id}] 处理完成，{len(all_chunks)} 个向量已入库")
         return True, len(all_chunks)
 
     except Exception as e:
@@ -165,7 +255,7 @@ def _sync_process_doc(doc_id: int):
         err_msg = str(e)
         if "未识别到文字内容" in err_msg or "图片文件无效" in err_msg or "图片中未识别到文字" in err_msg:
             err_msg = "图片中未识别到文字内容，无法入库，请上传包含文字的图片"
-        logger.error(f"[进程池] 文档 [{doc_id}] 处理失败: {err_msg}")
+        logger.error(f"[线程池] 文档 [{doc_id}] 处理失败: {err_msg}")
 
         doc = session.execute(
             select(Document).where(Document.id == doc_id)
@@ -182,7 +272,7 @@ def _sync_process_doc(doc_id: int):
 
 
 def _sync_process_audio_doc(doc_id: int, asr_text: str):
-    """处理 ASR 识别文本（分块+向量化），运行在进程池中"""
+    """处理 ASR 识别文本（分块+向量化），运行在线程池中"""
     from sqlalchemy.orm import Session
     from app.db.session import sync_engine
     from app.models.db import Document, KnowledgeBase, DocumentStatus, DocumentChunk
@@ -266,11 +356,11 @@ def _sync_process_audio_doc(doc_id: int, asr_text: str):
             kb.doc_count = (kb.doc_count or 0) + 1
 
         session.commit()
-        logger.info(f"[进程池] 语音文档 [{doc_id}] 处理完成，{len(all_chunks)} 个向量已入库")
+        logger.info(f"[线程池] 语音文档 [{doc_id}] 处理完成，{len(all_chunks)} 个向量已入库")
 
     except Exception as e:
         session.rollback()
-        logger.error(f"[进程池] 语音文档 [{doc_id}] 处理失败: {e}")
+        logger.error(f"[线程池] 语音文档 [{doc_id}] 处理失败: {e}")
         doc = session.execute(
             select(Document).where(Document.id == doc_id)
         ).scalar_one_or_none()
@@ -376,7 +466,7 @@ class DocumentService:
     async def process_document(doc_id: int):
         """
         文档处理入口（async，供 asyncio.create_task 调用）。
-        流程：查询文档信息 → 路由到进程池执行 CPU 密集型任务。
+        流程：查询文档信息 → 路由到线程池执行 CPU 密集型任务。
         事件循环始终保持空闲，不阻塞其他请求。
         """
         loop = asyncio.get_running_loop()
@@ -395,7 +485,7 @@ class DocumentService:
         AUDIO_TYPES = {"mp3", "wav", "m4a", "aac", "ogg", "wma", "flac", "pcm"}
 
         if file_type.lower() in AUDIO_TYPES:
-            # 语音文件：先 ASR，再进进程池处理
+            # 语音文件：先 ASR，再进线程池处理
             cfg = await DocumentService._get_voice_config(doc_id)
             if not cfg:
                 await _mark_failed_async(doc_id, "未找到已启用的语音识别配置，请前往「语音配置」页面添加并启用")
@@ -422,7 +512,7 @@ class DocumentService:
                 await _mark_failed_async(doc_id, f"语音识别失败: {e}")
                 return
 
-            # ASR 文本进进程池处理（分块+向量化）
+            # ASR 文本进线程池处理（分块+向量化）
             try:
                 await loop.run_in_executor(pool, _sync_process_audio_doc, doc_id, asr_text)
                 VectorStore._client = None

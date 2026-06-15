@@ -3,6 +3,7 @@ from app.parsers.pdf import PDFParser
 from app.parsers.word import WordParser
 from app.parsers.excel import ExcelParser, CSVParser
 from app.parsers.text import TextParser
+from app.parsers.markdown import MarkdownParser
 from app.parsers.image import ImageParser
 from app.parsers.voice import VoiceParser
 
@@ -16,7 +17,7 @@ def get_parser(file_type: str, asr_text: str = "") -> BaseParser:
         "xls": ExcelParser,
         "csv": CSVParser,
         "txt": TextParser,
-        "md": TextParser,
+        "md": MarkdownParser,
         "png": ImageParser,
         "jpg": ImageParser,
         "jpeg": ImageParser,

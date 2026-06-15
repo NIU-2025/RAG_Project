@@ -3,11 +3,11 @@
 使用 embedding 语义相似度替代 LLM Judge，快速稳定不卡死。
 
 用法:
-    python tests/evaluation/evaluate_weights.py
+    python tests/evaluation/retrievalCode/evaluate_weights.py
 
 输出:
     - 终端打印各权重组合的 ContextPrecision 得分
-    - tests/evaluation/weight_eval_report.md 保存详细报告
+    - tests/evaluation/retrievalCode/weight_eval_report.md 保存详细报告
 """
 
 import asyncio
@@ -18,7 +18,7 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from dotenv import load_dotenv
 load_dotenv()
